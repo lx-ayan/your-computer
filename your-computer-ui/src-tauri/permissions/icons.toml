@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-shell-icons"
+description = "允许按需读取文件外壳图标"
+commands.allow = ["get_shell_icons", "get_shell_icon"]

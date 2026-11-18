@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-recycle-bin"
+description = "允许列举/还原/删除/清空回收站"
+commands.allow = [
+  "list_recycle_bin",
+  "restore_recycle_bin_item",
+  "delete_recycle_bin_item",
+  "empty_recycle_bin"
+]

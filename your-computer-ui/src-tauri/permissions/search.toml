@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-search"
+description = "允许在本盘按文件名搜索"
+commands.allow = [
+  "search_drive",
+  "rebuild_search_index",
+  "search_index_status",
+  "list_search_volumes"
+]

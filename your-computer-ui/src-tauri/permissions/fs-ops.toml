@@ -1,0 +1,21 @@
+[[permission]]
+identifier = "allow-fs-ops"
+description = "允许文件新建/重命名/复制/移动/压缩/打开等操作"
+commands.allow = [
+  "create_folder",
+  "create_file",
+  "rename_path",
+  "duplicate_path",
+  "move_path",
+  "copy_into",
+  "trash_path",
+  "compress_zip",
+  "open_path",
+  "open_in_terminal",
+  "reveal_in_explorer",
+  "pin_quick_access",
+  "share_path",
+  "open_with_picker",
+  "read_image_data_url",
+  "open_ms_store_search"
+]

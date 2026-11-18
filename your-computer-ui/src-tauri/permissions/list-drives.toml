@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-list-drives"
+description = "允许读取本机磁盘列表"
+commands.allow = ["list_drives"]

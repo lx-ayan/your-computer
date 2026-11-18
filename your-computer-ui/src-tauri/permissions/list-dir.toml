@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-list-dir"
+description = "允许读取目录条目列表"
+commands.allow = ["list_dir"]

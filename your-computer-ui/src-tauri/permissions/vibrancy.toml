@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-vibrancy"
+description = "允许为窗口启用 Acrylic / 磨砂效果"
+commands.allow = ["apply_window_acrylic"]

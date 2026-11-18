@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-tags"
+description = "允许读写文件标签"
+commands.allow = ["list_item_tags", "set_item_tag", "list_items_by_tag"]

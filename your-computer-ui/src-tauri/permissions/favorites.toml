@@ -1,0 +1,12 @@
+[[permission]]
+identifier = "allow-favorites"
+description = "允许读写 SQLite 收藏与收藏夹"
+commands.allow = [
+  "list_favorite_folders",
+  "create_favorite_folder",
+  "list_favorites",
+  "add_favorite",
+  "remove_favorite",
+  "rename_favorite_folder",
+  "delete_favorite_folder"
+]

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-special"
+description = "允许读取系统特殊目录、最近使用与应用程序列表"
+commands.allow = ["get_special_folder", "list_recents", "list_applications", "get_local_ip"]

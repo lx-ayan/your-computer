@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-list-open-with"
+description = "允许读取「打开方式」应用列表"
+commands.allow = ["list_open_with"]

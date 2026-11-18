@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-get-item-info"
+description = "允许读取文件/文件夹属性信息"
+commands.allow = ["get_item_info"]
