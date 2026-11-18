@@ -10,6 +10,8 @@ build/
 **/dist/
 **/build/
 
+**/.vscode
+
 # Rust / Tauri
 **/target/
 **/src-tauri/gen/schemas/
