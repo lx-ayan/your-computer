@@ -8,6 +8,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { startOsFileDrag } from "./lib/osFileDrag";
 import {
   AppWindow,
   ArrowDownCircle,
@@ -83,6 +84,7 @@ import {
   loadIconSettings,
   migrateIconBlackBackgrounds,
   resolveOverrideIcon,
+  type AppIconKey,
   type IconSettings,
 } from "./lib/iconSettings";
 import { isImageFilePath } from "./lib/profile";
@@ -264,6 +266,75 @@ async function openSettingsWindow() {
   win.once("tauri://error", (e) => {
     console.error("settings window error", e);
   });
+}
+
+type BuiltinEditorKind = "word" | "markdown" | "excel";
+
+async function openBuiltinEditorWindow(
+  kind: BuiltinEditorKind,
+  path?: string | null,
+  name?: string | null,
+  opts?: { appTitle?: string },
+) {
+  if (!isTauri()) return;
+  const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  const blank = !path;
+  const label = blank
+    ? `editor-${kind}-new-${Date.now().toString(36)}`
+    : `editor-${kind}-${infoWindowLabel(path)}`;
+  if (!blank) {
+    const existing = await WebviewWindow.getByLabel(label);
+    // 关掉旧窗口再开，避免编辑器子窗口拿不到最新前端代码
+    if (existing) {
+      try {
+        await existing.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  const titles: Record<BuiltinEditorKind, string> = {
+    word: "VWord",
+    markdown: "VMarkdown",
+    excel: "VExcel",
+  };
+  const appTitle = opts?.appTitle ?? titles[kind];
+  const display =
+    name ||
+    (path
+      ? path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path
+      : "未命名.docx");
+  const params = new URLSearchParams({
+    editor: kind,
+    t: String(Date.now()),
+  });
+  if (path) params.set("file", path);
+  try {
+    const win = new WebviewWindow(label, {
+      url: `/?${params.toString()}`,
+      title: blank ? appTitle : `${appTitle} · ${display}`,
+      width: kind === "excel" ? 1100 : 900,
+      height: 700,
+      minWidth: 640,
+      minHeight: 420,
+      decorations: false,
+      transparent: false,
+      shadow: true,
+      center: true,
+      resizable: true,
+      focus: true,
+      visible: true,
+    });
+    win.once("tauri://created", () => {
+      void win.show();
+      void win.setFocus();
+    });
+    win.once("tauri://error", (e) => {
+      console.error("builtin editor window error", e);
+    });
+  } catch (err) {
+    console.error("openBuiltinEditorWindow failed", err);
+  }
 }
 
 /** 把 Windows/Unix 路径拆成可点击面包屑 */
@@ -741,6 +812,23 @@ function IconCaption({
 const topItems: SidebarItem[] = [
   { id: "recents", label: "最近使用", icon: "recents" },
   { id: "shared", label: "共享", icon: "shared" },
+  { id: "builtin-apps", label: "内置应用", icon: "apps" },
+];
+
+const builtinAppEntries: {
+  id: AppIconKey;
+  label: string;
+  kind: BuiltinEditorKind;
+  blankName: string;
+}[] = [
+  { id: "vword", label: "VWord", kind: "word", blankName: "未命名.docx" },
+  { id: "vexcel", label: "VExcel", kind: "excel", blankName: "未命名.xlsx" },
+  {
+    id: "vmarkdown",
+    label: "VMarkdown",
+    kind: "markdown",
+    blankName: "未命名.md",
+  },
 ];
 
 const favorites: SidebarItem[] = [
@@ -1070,6 +1158,64 @@ function SidebarButton({
   );
 }
 
+const BUILTIN_APP_TILE: Record<
+  BuiltinEditorKind,
+  { bg: string; glyph: string }
+> = {
+  word: { bg: "#2b5cff", glyph: "W" },
+  excel: { bg: "#1f7a3f", glyph: "X" },
+  markdown: { bg: "#5b5b5f", glyph: "M" },
+};
+
+function BuiltinAppsPage({
+  appIcons,
+  onOpen,
+}: {
+  appIcons: IconSettings["apps"];
+  onOpen: (app: (typeof builtinAppEntries)[number]) => void;
+}) {
+  return (
+    <div className="min-h-full p-6">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-4">
+        {builtinAppEntries.map((app) => {
+          const tile = BUILTIN_APP_TILE[app.kind];
+          const custom = appIcons[app.id];
+          return (
+            <button
+              key={app.id}
+              type="button"
+              className="group flex flex-col items-center gap-2 rounded-[12px] p-3 text-center hover:bg-[var(--finder-hover)]"
+              onDoubleClick={() => onOpen(app)}
+              onClick={() => onOpen(app)}
+            >
+              {custom ? (
+                <span className="flex size-[72px] items-center justify-center overflow-hidden rounded-[18px] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.12)] transition-transform group-active:scale-[0.97]">
+                  <img
+                    src={custom}
+                    alt=""
+                    className="size-[72px] object-contain"
+                    draggable={false}
+                  />
+                </span>
+              ) : (
+                <span
+                  className="flex size-[72px] items-center justify-center rounded-[18px] text-[28px] font-semibold text-white shadow-[0_1px_2px_rgba(0,0,0,0.12)] transition-transform group-active:scale-[0.97]"
+                  style={{ backgroundColor: tile.bg }}
+                >
+                  {tile.glyph}
+                </span>
+              )}
+              <span className="w-full truncate text-[12px] leading-[16px] text-[var(--finder-text)]">
+                {app.label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function App({
   initialPath = null,
   zoomIn = false,
@@ -1160,6 +1306,8 @@ function App({
     startX: number;
     startY: number;
     started: boolean;
+    /** 已交给系统原生拖出，避免与应用内拖放冲突 */
+    osDragStarted: boolean;
     payload: {
       path: string;
       name: string;
@@ -1167,6 +1315,8 @@ function App({
       kindLabel: string;
     }[];
     label: string;
+    /** 拖出预览图标（png data URL） */
+    previewIcon: string | null;
   } | null>(null);
   const [favFolderDialog, setFavFolderDialog] = useState<
     null | { mode: "create" } | { mode: "rename"; folderId: number; name: string }
@@ -1210,11 +1360,13 @@ function App({
 
   const browsingRealFs = currentPath !== null;
   const isTagSidebar = activeSidebar.startsWith("tag-");
+  const isBuiltinApps = activeSidebar === "builtin-apps";
   const virtualSidebar =
     activeSidebar === "recents" ||
     activeSidebar === "favorites" ||
     activeSidebar === "shared" ||
     activeSidebar === "trash" ||
+    isBuiltinApps ||
     isTagSidebar;
 
   const [sortKey, setSortKey] = useState<SortKey>("name");
@@ -2218,23 +2370,35 @@ function App({
       if (renamingId === item.id) return;
       const payload = buildFavDragPayload(item);
       if (!payload.length) return;
+      const icon = resolveIcon(item);
       fileDragRef.current = {
         pointerId: e.pointerId,
         startX: e.clientX,
         startY: e.clientY,
         started: false,
+        osDragStarted: false,
         payload,
         label:
           payload.length > 1
             ? `${payload[0].name} 等 ${payload.length} 项`
             : payload[0].name,
+        previewIcon:
+          typeof icon === "string" && icon.startsWith("data:image/png")
+            ? icon
+            : null,
       };
     },
-    [buildFavDragPayload, renamingId],
+    [buildFavDragPayload, renamingId, resolveIcon],
   );
 
   useEffect(() => {
     const THRESHOLD = 6;
+    /** 需明显拖出 webview，避免贴边/标题栏误触启动 DoDragDrop 卡死 */
+    const OUT_MARGIN = 8;
+    let pendingOsDragTimer: number | null = null;
+    /** 左键是否仍按下（松手后取消尚未启动的原生拖出） */
+    let primaryDown = false;
+
     const hitFavFolderId = (x: number, y: number): number | null => {
       const el = document.elementFromPoint(x, y);
       const chip = el?.closest?.("[data-fav-folder-id]") as HTMLElement | null;
@@ -2258,9 +2422,47 @@ function App({
       return path;
     };
 
+    const clearInAppDragUi = () => {
+      document.body.style.cursor = "";
+      setFileDragging(false);
+      setDragGhost(null);
+      setFavBarDropTargetId(null);
+      setFileDropTargetPath(null);
+    };
+
+    const cancelPendingOsDrag = () => {
+      if (pendingOsDragTimer != null) {
+        window.clearTimeout(pendingOsDragTimer);
+        pendingOsDragTimer = null;
+      }
+    };
+
+    const handOffToOsDrag = (
+      s: NonNullable<typeof fileDragRef.current>,
+      buttons: number,
+    ) => {
+      if (s.osDragStarted || !isTauri()) return;
+      // 左键已松开时绝不能调 startDrag：DoDragDrop 收不到 mouse-up 会永久卡住
+      if ((buttons & 1) === 0 || !primaryDown) return;
+      s.osDragStarted = true;
+      const paths = s.payload.map((p) => p.path);
+      const icon = s.previewIcon;
+      fileDragRef.current = null;
+      clearInAppDragUi();
+      cancelPendingOsDrag();
+      // 推迟到下一 macrotask：若用户已松手则取消，避免竞态卡死
+      pendingOsDragTimer = window.setTimeout(() => {
+        pendingOsDragTimer = null;
+        if (!primaryDown) return;
+        void startOsFileDrag(paths, icon);
+      }, 0);
+    };
+
     const onMove = (e: PointerEvent) => {
+      primaryDown = (e.buttons & 1) !== 0;
       const s = fileDragRef.current;
-      if (!s || s.pointerId !== e.pointerId) return;
+      if (!s || s.pointerId !== e.pointerId || s.osDragStarted) return;
+      if (!primaryDown) return;
       if (!s.started) {
         const dx = e.clientX - s.startX;
         const dy = e.clientY - s.startY;
@@ -2269,6 +2471,18 @@ function App({
         setFileDragging(true);
         setFavBarMenu(null);
       }
+
+      // 拖出窗口：交给系统，可放到桌面 / 其它应用
+      const outside =
+        e.clientX < -OUT_MARGIN ||
+        e.clientY < -OUT_MARGIN ||
+        e.clientX > window.innerWidth + OUT_MARGIN ||
+        e.clientY > window.innerHeight + OUT_MARGIN;
+      if (outside) {
+        handOffToOsDrag(s, e.buttons);
+        return;
+      }
+
       setDragGhost({ x: e.clientX, y: e.clientY, label: s.label });
       const sources = s.payload.map((p) => p.path);
       const favId = hitFavFolderId(e.clientX, e.clientY);
@@ -2285,17 +2499,15 @@ function App({
     };
 
     const onUp = (e: PointerEvent) => {
+      primaryDown = false;
+      cancelPendingOsDrag();
       const s = fileDragRef.current;
       if (!s || s.pointerId !== e.pointerId) return;
       fileDragRef.current = null;
-      const wasStarted = s.started;
+      const wasStarted = s.started && !s.osDragStarted;
       const payload = s.payload;
       const sources = payload.map((p) => p.path);
-      document.body.style.cursor = "";
-      setFileDragging(false);
-      setDragGhost(null);
-      setFavBarDropTargetId(null);
-      setFileDropTargetPath(null);
+      clearInAppDragUi();
       if (!wasStarted) return;
 
       const swallow = (ce: MouseEvent) => {
@@ -2319,20 +2531,25 @@ function App({
     };
 
     const onCancel = (e: PointerEvent) => {
+      primaryDown = false;
+      cancelPendingOsDrag();
       const s = fileDragRef.current;
       if (!s || s.pointerId !== e.pointerId) return;
       fileDragRef.current = null;
-      document.body.style.cursor = "";
-      setFileDragging(false);
-      setDragGhost(null);
-      setFavBarDropTargetId(null);
-      setFileDropTargetPath(null);
+      clearInAppDragUi();
     };
 
+    const onDown = (e: PointerEvent) => {
+      if (e.button === 0) primaryDown = true;
+    };
+
+    window.addEventListener("pointerdown", onDown);
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
     return () => {
+      cancelPendingOsDrag();
+      window.removeEventListener("pointerdown", onDown);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
@@ -2500,6 +2717,15 @@ function App({
       function handleSidebarSelect(id: string) {
     setActiveSidebar(id);
     setMarquee(null);
+
+    if (id === "builtin-apps") {
+      setCurrentPath(null);
+      setFolderItems([]);
+      setNavStack([]);
+      setNavIndex(-1);
+      setSelectedIds([]);
+      return;
+    }
 
     const drive = drives.find((d) => d.id === id);
     if (drive && isTauri()) {
@@ -2753,6 +2979,7 @@ function App({
         multiSelect: nextSelected.length > 1,
         showMore: false,
         showOpenWith: false,
+        showBuiltinEditors: false,
         surface,
         isFavoriteFolder: isFavoriteFolderPath(item?.path),
       });
@@ -2774,6 +3001,7 @@ function App({
       multiSelect: false,
       showMore: false,
       showOpenWith: false,
+      showBuiltinEditors: false,
       surface:
         activeSidebar === "favorites"
           ? "favorites"
@@ -3139,6 +3367,20 @@ function App({
           await invoke("open_path", { path: itemPath });
         }
       }
+
+      if (id.startsWith("builtin-") && itemPath) {
+        const kind =
+          id === "builtin-word"
+            ? "word"
+            : id === "builtin-markdown"
+              ? "markdown"
+              : id === "builtin-excel"
+                ? "excel"
+                : null;
+        if (kind) {
+          await openBuiltinEditorWindow(kind, itemPath, itemName);
+        }
+      }
     } catch (err) {
       console.error("context action failed", id, err);
     }
@@ -3163,7 +3405,24 @@ function App({
             ]);
           });
       }
-      return { ...prev, showOpenWith: next, showMore: false };
+      return {
+        ...prev,
+        showOpenWith: next,
+        showMore: false,
+        showBuiltinEditors: next ? prev.showBuiltinEditors : false,
+      };
+    });
+  }
+
+  function handleToggleBuiltinEditors() {
+    setContextMenu((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        showBuiltinEditors: !prev.showBuiltinEditors,
+        showOpenWith: true,
+        showMore: false,
+      };
     });
   }
 
@@ -3671,7 +3930,16 @@ function App({
               }
             }}
           >
-            {viewMode === "columns" ? (
+            {isBuiltinApps ? (
+              <BuiltinAppsPage
+                appIcons={iconSettings.apps}
+                onOpen={(app) => {
+                  void openBuiltinEditorWindow(app.kind, null, app.blankName, {
+                    appTitle: app.label,
+                  });
+                }}
+              />
+            ) : viewMode === "columns" ? (
               <ColumnsView
                 columns={columns}
                 preview={columnPreview}
@@ -4084,11 +4352,13 @@ function App({
                     ...prev,
                     showMore: !prev.showMore,
                     showOpenWith: false,
+                    showBuiltinEditors: false,
                   }
                 : prev,
             )
           }
           onToggleOpenWith={handleToggleOpenWith}
+          onToggleBuiltinEditors={handleToggleBuiltinEditors}
           onAction={(actionId) => void handleContextAction(actionId)}
         />
       ) : null}

@@ -1,5 +1,8 @@
 export type GlobalIconKey = "folder" | "video" | "audio";
 
+/** 内置应用图标键 */
+export type AppIconKey = "vword" | "vexcel" | "vmarkdown";
+
 export type CustomIconRule = {
   id: string;
   /** 不含点的小写后缀，如 mp4 */
@@ -9,6 +12,8 @@ export type CustomIconRule = {
 
 export type IconSettings = {
   global: Record<GlobalIconKey, string | null>;
+  /** 内置应用自定义图标 */
+  apps: Record<AppIconKey, string | null>;
   custom: CustomIconRule[];
 };
 
@@ -19,6 +24,14 @@ export const GLOBAL_ICON_LABELS: Record<GlobalIconKey, string> = {
   folder: "文件夹",
   video: "视频文件",
   audio: "音频文件",
+};
+
+export const APP_ICON_KEYS: AppIconKey[] = ["vword", "vexcel", "vmarkdown"];
+
+export const APP_ICON_LABELS: Record<AppIconKey, string> = {
+  vword: "VWord",
+  vexcel: "VExcel",
+  vmarkdown: "VMarkdown",
 };
 
 const VIDEO_EXTS = new Set([
@@ -51,8 +64,13 @@ const AUDIO_EXTS = new Set([
 
 export const DEFAULT_ICON_SETTINGS: IconSettings = {
   global: { folder: null, video: null, audio: null },
+  apps: { vword: null, vexcel: null, vmarkdown: null },
   custom: [],
 };
+
+function asDataUrl(v: unknown): string | null {
+  return typeof v === "string" && v.startsWith("data:") ? v : null;
+}
 
 export function normalizeExt(raw: string): string {
   return raw.trim().replace(/^\.+/, "").toLowerCase();
@@ -75,6 +93,7 @@ export function isAudioExt(ext: string): boolean {
 
 function normalizeSettings(raw: Partial<IconSettings> | null | undefined): IconSettings {
   const g: Partial<Record<GlobalIconKey, string | null>> = raw?.global ?? {};
+  const a: Partial<Record<AppIconKey, string | null>> = raw?.apps ?? {};
   const customIn = Array.isArray(raw?.custom) ? raw!.custom! : [];
   const seen = new Set<string>();
   const custom: CustomIconRule[] = [];
@@ -94,12 +113,14 @@ function normalizeSettings(raw: Partial<IconSettings> | null | undefined): IconS
   }
   return {
     global: {
-      folder:
-        typeof g.folder === "string" && g.folder.startsWith("data:") ? g.folder : null,
-      video:
-        typeof g.video === "string" && g.video.startsWith("data:") ? g.video : null,
-      audio:
-        typeof g.audio === "string" && g.audio.startsWith("data:") ? g.audio : null,
+      folder: asDataUrl(g.folder),
+      video: asDataUrl(g.video),
+      audio: asDataUrl(g.audio),
+    },
+    apps: {
+      vword: asDataUrl(a.vword),
+      vexcel: asDataUrl(a.vexcel),
+      vmarkdown: asDataUrl(a.vmarkdown),
     },
     custom,
   };
@@ -126,7 +147,9 @@ export async function migrateIconBlackBackgrounds(): Promise<IconSettings | null
   }
   const cur = loadIconSettings();
   const hasAny =
-    Object.values(cur.global).some((v) => Boolean(v)) || cur.custom.length > 0;
+    Object.values(cur.global).some((v) => Boolean(v)) ||
+    Object.values(cur.apps).some((v) => Boolean(v)) ||
+    cur.custom.length > 0;
   if (!hasAny) {
     try {
       localStorage.setItem(ICON_ALPHA_MIGRATED_KEY, "1");
@@ -143,13 +166,20 @@ export async function migrateIconBlackBackgrounds(): Promise<IconSettings | null
       global[key] = await stripBlackBackground(v);
     }
   }
+  const apps = { ...cur.apps };
+  for (const key of APP_ICON_KEYS) {
+    const v = apps[key];
+    if (v?.startsWith("data:")) {
+      apps[key] = await stripBlackBackground(v);
+    }
+  }
   const custom = await Promise.all(
     cur.custom.map(async (r) => {
       if (!r.iconDataUrl.startsWith("data:")) return r;
       return { ...r, iconDataUrl: await stripBlackBackground(r.iconDataUrl) };
     }),
   );
-  const next = saveIconSettings({ global, custom });
+  const next = saveIconSettings({ global, apps, custom });
   try {
     localStorage.setItem(ICON_ALPHA_MIGRATED_KEY, "1");
   } catch {
@@ -192,15 +222,35 @@ export function setGlobalIcon(
   });
 }
 
+export function setAppIcon(
+  key: AppIconKey,
+  iconDataUrl: string | null,
+): IconSettings {
+  const cur = loadIconSettings();
+  return saveIconSettings({
+    ...cur,
+    apps: { ...cur.apps, [key]: iconDataUrl },
+  });
+}
+
+export function resolveAppIcon(
+  settings: IconSettings,
+  key: AppIconKey,
+): string | undefined {
+  return settings.apps[key] || undefined;
+}
+
 export type PickTargetPayload =
   | { type: "avatar" }
   | { type: "global"; key: GlobalIconKey }
+  | { type: "app"; key: AppIconKey }
   | { type: "custom-new" }
   | { type: "custom-edit"; id: string };
 
 export function encodePickTarget(target: PickTargetPayload): string {
   if (target.type === "avatar") return "avatar";
   if (target.type === "global") return `global:${target.key}`;
+  if (target.type === "app") return `app:${target.key}`;
   if (target.type === "custom-new") return "custom-new";
   return `custom-edit:${target.id}`;
 }
@@ -213,6 +263,12 @@ export function decodePickTarget(raw: string | null | undefined): PickTargetPayl
     const key = raw.slice("global:".length) as GlobalIconKey;
     if (key === "folder" || key === "video" || key === "audio") {
       return { type: "global", key };
+    }
+  }
+  if (raw.startsWith("app:")) {
+    const key = raw.slice("app:".length) as AppIconKey;
+    if (key === "vword" || key === "vexcel" || key === "vmarkdown") {
+      return { type: "app", key };
     }
   }
   if (raw.startsWith("custom-edit:")) {
@@ -239,6 +295,10 @@ export async function applyPickedImage(
   const dataUrl = await iconFromLocalPath(path);
   if (target.type === "global") {
     setGlobalIcon(target.key, dataUrl);
+    return;
+  }
+  if (target.type === "app") {
+    setAppIcon(target.key, dataUrl);
     return;
   }
   if (target.type === "custom-edit") {

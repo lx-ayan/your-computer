@@ -17,5 +17,12 @@ commands.allow = [
   "share_path",
   "open_with_picker",
   "read_image_data_url",
+  "read_text_file",
+  "write_text_file",
+  "read_file_base64",
+  "write_file_base64",
+  "pick_open_files",
+  "pick_save_file",
+  "print_html_document",
   "open_ms_store_search"
 ]

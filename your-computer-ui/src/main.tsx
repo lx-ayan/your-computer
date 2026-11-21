@@ -8,6 +8,10 @@ import {
 import { GetInfoWindow } from "./components/GetInfoWindow";
 import { SearchWindow } from "./components/SearchWindow";
 import { SettingsPanel } from "./components/SettingsPanel";
+import {
+  BuiltinEditorWindow,
+  type BuiltinEditorKind,
+} from "./components/editors/BuiltinEditorWindow";
 import "./index.css";
 
 const params = new URLSearchParams(window.location.search);
@@ -18,6 +22,16 @@ const isSearchWindow = params.get("search") === "1";
 const isSettingsWindow = params.get("settings") === "1";
 const pickMode = params.get("pick") === "image" ? ("image" as const) : null;
 const pickTarget = params.get("pickTarget");
+const editorKindRaw = params.get("editor");
+const editorFileRaw = params.get("file");
+const editorFile =
+  editorFileRaw && editorFileRaw.length > 0 ? editorFileRaw : null;
+const editorKind: BuiltinEditorKind | null =
+  editorKindRaw === "word" ||
+  editorKindRaw === "markdown" ||
+  editorKindRaw === "excel"
+    ? editorKindRaw
+    : null;
 const confirmRaw = params.get("confirmDelete");
 
 let confirmPayload: ConfirmDeletePayload | null = null;
@@ -39,6 +53,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     {confirmPayload ? (
       <ConfirmDeleteWindow payload={confirmPayload} />
+    ) : editorKind ? (
+      <BuiltinEditorWindow kind={editorKind} path={editorFile} />
     ) : infoPath ? (
       <GetInfoWindow path={infoPath} />
     ) : isSearchWindow ? (

@@ -18,6 +18,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_drag::init())
         .setup(|app| {
             let db = favorites::init_db(app.handle())?;
             app.manage(db);
@@ -49,6 +50,13 @@ pub fn run() {
             fs_ops::share_path,
             fs_ops::open_with_picker,
             fs_ops::read_image_data_url,
+            fs_ops::read_text_file,
+            fs_ops::write_text_file,
+            fs_ops::read_file_base64,
+            fs_ops::write_file_base64,
+            fs_ops::pick_open_files,
+            fs_ops::pick_save_file,
+            fs_ops::print_html_document,
             fs_ops::open_ms_store_search,
             vibrancy::apply_window_acrylic,
             special::get_special_folder,

@@ -42,11 +42,19 @@ export type ContextMenuState = {
   multiSelect: boolean;
   showMore: boolean;
   showOpenWith: boolean;
+  /** 打开方式 → 内置 子菜单 */
+  showBuiltinEditors?: boolean;
   /** 收藏视图专用菜单 */
   surface?: ContextMenuSurface;
   /** 收藏夹节点（非收藏条目） */
   isFavoriteFolder?: boolean;
 };
+
+export const BUILTIN_EDITORS = [
+  { id: "builtin-word", label: "Word 编辑器" },
+  { id: "builtin-markdown", label: "Markdown 编辑器" },
+  { id: "builtin-excel", label: "Excel 编辑器" },
+] as const;
 
 export type OpenWithApp = {
   id: string;
@@ -280,6 +288,7 @@ type Props = {
   onClose: () => void;
   onToggleMore: () => void;
   onToggleOpenWith: () => void;
+  onToggleBuiltinEditors: () => void;
   onAction: (id: string) => void;
 };
 
@@ -291,6 +300,7 @@ export function ContextMenu({
   onClose,
   onToggleMore,
   onToggleOpenWith,
+  onToggleBuiltinEditors,
   onAction,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -333,7 +343,8 @@ export function ContextMenu({
 
     const pad = 8;
     const width = 248;
-    const subW = menu.showOpenWith ? 200 : 0;
+    const subW =
+      (menu.showOpenWith ? 200 : 0) + (menu.showBuiltinEditors ? 180 : 0);
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     let left = menu.x;
@@ -348,7 +359,14 @@ export function ContextMenu({
     if (openWithBtn) {
       setOpenWithTop(openWithBtn.offsetTop);
     }
-  }, [menu.x, menu.y, rows, menu.showMore, menu.showOpenWith]);
+  }, [
+    menu.x,
+    menu.y,
+    rows,
+    menu.showMore,
+    menu.showOpenWith,
+    menu.showBuiltinEditors,
+  ]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -502,8 +520,11 @@ export function ContextMenu({
               className="w-[200px] shadow-[0_0_8px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.12)]"
               style={{
                 height: Math.max(
-                  80,
-                  8 + openWithApps.length * 28 + (openWithApps.length ? 0 : 28),
+                  112,
+                  8 +
+                    28 + // 内置
+                    8 + // sep
+                    (openWithApps.length ? openWithApps.length : 1) * 28,
                 ),
               }}
               contentClassName="flex h-full min-h-0 w-full flex-col overflow-hidden py-1"
@@ -511,6 +532,26 @@ export function ContextMenu({
               radius={12}
             >
               <ul className="px-1.5">
+                <li>
+                  <button
+                    type="button"
+                    data-menu-id="builtin-editors"
+                    className={`flex w-full items-center rounded-[6px] ${ITEM_PAD} text-left text-[13px] text-[var(--finder-text)] hover:bg-black/[0.06] ${
+                      menu.showBuiltinEditors ? "bg-black/[0.06]" : ""
+                    }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleBuiltinEditors();
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 truncate">内置</span>
+                    <ChevronRight
+                      className="size-3.5 shrink-0 opacity-50"
+                      strokeWidth={2}
+                    />
+                  </button>
+                </li>
+                <li className="my-1 border-t border-black/[0.08]" />
                 {openWithApps.length === 0 ? (
                   <li className={`${ITEM_PAD} text-[12px] text-[var(--finder-text-muted)]`}>
                     加载中…
@@ -536,6 +577,37 @@ export function ContextMenu({
                 )}
               </ul>
             </LiquidGlass>
+
+            {menu.showBuiltinEditors ? (
+              <div className="absolute top-0 left-[calc(100%+4px)] w-[180px]">
+                <LiquidGlass
+                  className="w-[180px] shadow-[0_0_8px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.12)]"
+                  style={{ height: 8 + BUILTIN_EDITORS.length * 28 }}
+                  contentClassName="flex h-full min-h-0 w-full flex-col overflow-hidden py-1"
+                  config={glassConfig}
+                  radius={12}
+                >
+                  <ul className="px-1.5">
+                    {BUILTIN_EDITORS.map((ed) => (
+                      <li key={ed.id}>
+                        <button
+                          type="button"
+                          className={`flex w-full items-center rounded-[6px] ${ITEM_PAD} text-left text-[13px] text-[var(--finder-text)] hover:bg-black/[0.06]`}
+                          onClick={() => {
+                            onAction(ed.id);
+                            onClose();
+                          }}
+                        >
+                          <span className="min-w-0 flex-1 truncate">
+                            {ed.label}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </LiquidGlass>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>

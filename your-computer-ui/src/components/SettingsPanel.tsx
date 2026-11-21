@@ -25,6 +25,8 @@ import {
   type AppSettings,
 } from "../lib/appSettings";
 import {
+  APP_ICON_KEYS,
+  APP_ICON_LABELS,
   GLOBAL_ICON_LABELS,
   decodePickTarget,
   encodePickTarget,
@@ -32,11 +34,13 @@ import {
   migrateIconBlackBackgrounds,
   normalizeExt,
   removeCustomIcon,
+  setAppIcon,
   setGlobalIcon,
   takePendingAvatar,
   takePendingCustomIcon,
   updateCustomIconImage,
   upsertCustomIcon,
+  type AppIconKey,
   type GlobalIconKey,
   type IconSettings,
   type PickTargetPayload,
@@ -62,6 +66,15 @@ const GLOBAL_ICON_ROWS: {
   { key: "video", icon: Video },
   { key: "audio", icon: Music },
 ];
+
+const APP_ICON_DEFAULTS: Record<
+  AppIconKey,
+  { bg: string; glyph: string }
+> = {
+  vword: { bg: "#2b5cff", glyph: "W" },
+  vexcel: { bg: "#1f7a3f", glyph: "X" },
+  vmarkdown: { bg: "#5b5b5f", glyph: "M" },
+};
 
 type SectionId =
   | "basic"
@@ -103,7 +116,7 @@ const SECTION_META: Record<
   },
   icons: {
     title: "图标设置",
-    desc: "全局类型图标与按后缀自定义图标",
+    desc: "全局类型、内置应用与按后缀自定义图标",
     icon: ImageIcon,
     color: "#af52de",
   },
@@ -320,6 +333,8 @@ export function SettingsPanel() {
                 setDraftAvatar(dataUrl);
               } else if (target.type === "global") {
                 setIconSettings(setGlobalIcon(target.key, dataUrl));
+              } else if (target.type === "app") {
+                setIconSettings(setAppIcon(target.key, dataUrl));
               } else if (target.type === "custom-new") {
                 setDraftExtIcon(dataUrl);
               } else if (target.type === "custom-edit") {
@@ -724,6 +739,71 @@ export function SettingsPanel() {
                             className="rounded-[6px] px-2 py-1 text-[12px] text-[#6e6e73] hover:bg-black/[0.04]"
                             onClick={() =>
                               setIconSettings(setGlobalIcon(key, null))
+                            }
+                          >
+                            清除
+                          </button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </GrayPanel>
+              </div>
+
+              <div>
+                <div className="mb-2 px-0.5 text-[12px] font-medium text-[#6e6e73]">
+                  应用图标
+                </div>
+                <GrayPanel className="overflow-hidden divide-y divide-black/[0.06]">
+                  {APP_ICON_KEYS.map((key) => {
+                    const src = iconSettings.apps[key];
+                    const fallback = APP_ICON_DEFAULTS[key];
+                    return (
+                      <div
+                        key={key}
+                        className="flex items-center gap-3 px-3.5 py-[10px]"
+                      >
+                        <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-[8px] bg-white">
+                          {src ? (
+                            <img
+                              src={src}
+                              alt=""
+                              className="size-10 object-contain"
+                              draggable={false}
+                            />
+                          ) : (
+                            <span
+                              className="flex size-8 items-center justify-center rounded-[8px] text-[13px] font-semibold text-white"
+                              style={{ backgroundColor: fallback.bg }}
+                            >
+                              {fallback.glyph}
+                            </span>
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13px] text-[#1d1d1f]">
+                            {APP_ICON_LABELS[key]}
+                          </div>
+                          <div className="text-[11px] text-[#6e6e73]">
+                            {src ? "已设置自定义图标" : "使用默认图标"}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={picking}
+                          className="rounded-[6px] bg-white px-2.5 py-1 text-[12px] text-[#1d1d1f] hover:bg-black/[0.04] disabled:opacity-50"
+                          onClick={() =>
+                            void openImagePicker({ type: "app", key })
+                          }
+                        >
+                          选择图片
+                        </button>
+                        {src ? (
+                          <button
+                            type="button"
+                            className="rounded-[6px] px-2 py-1 text-[12px] text-[#6e6e73] hover:bg-black/[0.04]"
+                            onClick={() =>
+                              setIconSettings(setAppIcon(key, null))
                             }
                           >
                             清除

@@ -451,6 +451,290 @@ pub fn open_with_picker(path: String) -> Result<(), String> {
     }
 }
 
+/// 读取文本文件（UTF-8；失败时按有损解码）
+#[tauri::command]
+pub fn read_text_file(path: String) -> Result<String, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        return Err("不是文件".into());
+    }
+    let bytes = fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
+    if bytes.len() > 32 * 1024 * 1024 {
+        return Err("文件过大（上限 32MB）".into());
+    }
+    match String::from_utf8(bytes.clone()) {
+        Ok(s) => Ok(s),
+        Err(_) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+    }
+}
+
+/// 写入文本文件（UTF-8）
+#[tauri::command]
+pub fn write_text_file(path: String, content: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            return Err("目标目录不存在".into());
+        }
+    }
+    fs::write(&p, content.as_bytes()).map_err(|e| format!("写入失败: {e}"))
+}
+
+/// 读取任意文件为 base64（编辑器用）
+#[tauri::command]
+pub fn read_file_base64(path: String) -> Result<String, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        return Err("不是文件".into());
+    }
+    let bytes = fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err("文件过大（上限 64MB）".into());
+    }
+    Ok(crate::icons::base64_encode(&bytes))
+}
+
+/// 将 base64 写入文件
+#[tauri::command]
+pub fn write_file_base64(path: String, data_base64: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            return Err("目标目录不存在".into());
+        }
+    }
+    let bytes = crate::icons::base64_decode(&data_base64)
+        .map_err(|e| format!("解码失败: {e}"))?;
+    fs::write(&p, bytes).map_err(|e| format!("写入失败: {e}"))
+}
+
+/// 打开文件对话框（可多选）
+#[tauri::command]
+pub fn pick_open_files() -> Result<Vec<String>, String> {
+    let files = rfd::FileDialog::new()
+        .add_filter("Word 文档", &["docx"])
+        .add_filter("文本", &["txt", "md", "html", "htm"])
+        .add_filter("所有文件", &["*"])
+        .pick_files()
+        .unwrap_or_default();
+    Ok(files
+        .into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect())
+}
+
+/// 另存为对话框
+#[tauri::command]
+pub fn pick_save_file(default_name: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new().add_filter("Word 文档", &["docx"]);
+    if let Some(name) = default_name.filter(|s| !s.is_empty()) {
+        dialog = dialog.set_file_name(&name);
+    } else {
+        dialog = dialog.set_file_name("未命名.docx");
+    }
+    Ok(dialog
+        .save_file()
+        .map(|p| p.to_string_lossy().to_string()))
+}
+
+fn find_chromium_browser() -> Option<PathBuf> {
+    const CANDIDATES: &[&str] = &[
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ];
+    CANDIDATES
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+}
+
+fn path_as_file_url(path: &Path) -> String {
+    let abs = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf());
+    let mut s = abs.to_string_lossy().replace('\\', "/");
+    // Windows canonicalize 可能带 \\?\ 前缀
+    if let Some(stripped) = s.strip_prefix("//?/") {
+        s = stripped.to_string();
+    }
+    // 非 ASCII 路径 percent-encode，避免 headless 打不开
+    let encoded: String = s
+        .chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '/' | ':' | '-' | '_' | '.' | '~' => {
+                c.to_string()
+            }
+            _ => {
+                let mut buf = [0u8; 4];
+                c.encode_utf8(&mut buf)
+                    .bytes()
+                    .map(|b| format!("%{b:02X}"))
+                    .collect()
+            }
+        })
+        .collect();
+    if encoded.starts_with('/') {
+        format!("file://{encoded}")
+    } else {
+        format!("file:///{encoded}")
+    }
+}
+
+#[cfg(windows)]
+fn wide_null(s: &str) -> Vec<u16> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+/// ShellExecuteW 动词（print / open）。返回值 > 32 表示成功。
+#[cfg(windows)]
+fn shell_execute(verb: &str, file: &Path, params: Option<&str>) -> bool {
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut core::ffi::c_void,
+            lp_operation: *const u16,
+            lp_file: *const u16,
+            lp_parameters: *const u16,
+            lp_directory: *const u16,
+            n_show_cmd: i32,
+        ) -> isize;
+    }
+    let op = wide_null(verb);
+    let path = wide_null(&file.to_string_lossy());
+    let params_w = params.map(wide_null);
+    let ret = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            path.as_ptr(),
+            params_w
+                .as_ref()
+                .map(|v| v.as_ptr())
+                .unwrap_or(std::ptr::null()),
+            std::ptr::null(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+    ret > 32
+}
+
+/// 将 HTML 打印为无页眉页脚的 PDF，并调起系统打印。
+/// 成功时返回提示文案（打印对话框 / 已打开 PDF）。
+#[tauri::command]
+pub fn print_html_document(html: String) -> Result<String, String> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let browser = find_chromium_browser().ok_or_else(|| {
+        "未找到 Microsoft Edge 或 Chrome，无法打印".to_string()
+    })?;
+
+    // 独立目录 + 独立 profile，避免与正在运行的 Edge 冲突
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("your-computer-print-{stamp}"));
+    let profile = dir.join("profile");
+    fs::create_dir_all(&profile).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    let html_path = dir.join("document.html");
+    let pdf_path = dir.join("document.pdf");
+
+    fs::write(&html_path, html.as_bytes()).map_err(|e| format!("写入 HTML 失败: {e}"))?;
+
+    let file_url = path_as_file_url(&html_path);
+    let pdf_arg = format!("--print-to-pdf={}", pdf_path.to_string_lossy());
+    let profile_arg = format!("--user-data-dir={}", profile.to_string_lossy());
+
+    let run_headless = |headless: &str| -> Result<std::process::ExitStatus, String> {
+        Command::new(&browser)
+            .args([
+                headless,
+                "--disable-gpu",
+                "--disable-extensions",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--allow-file-access-from-files",
+                "--no-pdf-header-footer",
+                &profile_arg,
+                &pdf_arg,
+                &file_url,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format!("启动浏览器失败: {e}"))
+    };
+
+    let status = run_headless("--headless=new")?;
+    if !status.success() {
+        let status2 = run_headless("--headless")?;
+        if !status2.success() {
+            return Err("生成打印 PDF 失败（Edge/Chrome headless）".into());
+        }
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if pdf_path.is_file() {
+            if let Ok(meta) = fs::metadata(&pdf_path) {
+                if meta.len() > 0 {
+                    break;
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err("生成打印 PDF 超时".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    #[cfg(windows)]
+    {
+        // 1) 系统「打印」动词
+        if shell_execute("print", &pdf_path, None) {
+            return Ok("已调起系统打印".into());
+        }
+        // 2) 部分机器 .pdf 未注册 print：对 HTML 再试
+        if shell_execute("print", &html_path, None) {
+            return Ok("已调起系统打印".into());
+        }
+        // 3) 用 Edge 打开无页眉 PDF（可 Ctrl+P）
+        let pdf_str = pdf_path.to_string_lossy().to_string();
+        if Command::new(&browser)
+            .arg(&pdf_str)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return Ok("已打开 PDF，请按 Ctrl+P 打印".into());
+        }
+        // 4) open 动词兜底
+        if shell_execute("open", &pdf_path, None) {
+            return Ok("已打开 PDF，请按 Ctrl+P 打印".into());
+        }
+        return Err(
+            "已生成 PDF，但无法调起打印。请手动打开临时目录中的 document.pdf".into(),
+        );
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (browser, pdf_path);
+        Err("当前平台暂不支持系统打印".into())
+    }
+}
+
 /// 读取本地图片为 data URL（供设置头像等选用）
 #[tauri::command]
 pub fn read_image_data_url(path: String) -> Result<String, String> {

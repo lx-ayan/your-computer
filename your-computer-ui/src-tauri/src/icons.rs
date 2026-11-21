@@ -508,3 +508,48 @@ pub(crate) fn base64_encode(data: &[u8]) -> String {
     }
     out
 }
+
+pub(crate) fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    fn val(c: u8) -> Result<u8, String> {
+        match c {
+            b'A'..=b'Z' => Ok(c - b'A'),
+            b'a'..=b'z' => Ok(c - b'a' + 26),
+            b'0'..=b'9' => Ok(c - b'0' + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err("非法 base64".into()),
+        }
+    }
+    let cleaned: Vec<u8> = input
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    if cleaned.len() % 4 != 0 {
+        return Err("非法 base64 长度".into());
+    }
+    let mut out = Vec::with_capacity(cleaned.len() / 4 * 3);
+    for chunk in cleaned.chunks_exact(4) {
+        let pad = chunk.iter().filter(|&&c| c == b'=').count();
+        let a = val(chunk[0])? as u32;
+        let b = val(chunk[1])? as u32;
+        let c = if chunk[2] == b'=' {
+            0
+        } else {
+            val(chunk[2])? as u32
+        };
+        let d = if chunk[3] == b'=' {
+            0
+        } else {
+            val(chunk[3])? as u32
+        };
+        let n = (a << 18) | (b << 12) | (c << 6) | d;
+        out.push(((n >> 16) & 0xff) as u8);
+        if pad < 2 {
+            out.push(((n >> 8) & 0xff) as u8);
+        }
+        if pad < 1 {
+            out.push((n & 0xff) as u8);
+        }
+    }
+    Ok(out)
+}

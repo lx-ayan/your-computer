@@ -21,6 +21,8 @@ build/
 .env.*
 !.env.example
 
+.workbuddy/
+
 # Logs
 logs/
 *.log

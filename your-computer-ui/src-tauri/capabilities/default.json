@@ -2,10 +2,11 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main and info windows",
-  "windows": ["main", "info-*", "browse-*", "confirm-*", "search-*", "settings", "pick-*"],
+  "windows": ["main", "info-*", "browse-*", "confirm-*", "search-*", "settings", "pick-*", "editor-*"],
   "permissions": [
     "core:default",
     "opener:default",
+    "drag:default",
     "core:window:allow-close",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
