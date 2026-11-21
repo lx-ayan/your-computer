@@ -50,6 +50,7 @@ pub fn run() {
             fs_ops::share_path,
             fs_ops::open_with_picker,
             fs_ops::read_image_data_url,
+            fs_ops::path_exists,
             fs_ops::read_text_file,
             fs_ops::write_text_file,
             fs_ops::read_file_base64,

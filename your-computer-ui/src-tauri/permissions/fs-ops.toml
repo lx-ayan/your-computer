@@ -17,6 +17,7 @@ commands.allow = [
   "share_path",
   "open_with_picker",
   "read_image_data_url",
+  "path_exists",
   "read_text_file",
   "write_text_file",
   "read_file_base64",

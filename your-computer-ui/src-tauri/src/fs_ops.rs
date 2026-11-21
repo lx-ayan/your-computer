@@ -451,6 +451,13 @@ pub fn open_with_picker(path: String) -> Result<(), String> {
     }
 }
 
+/// 判断路径是否为已存在的普通文件（用于最近打开等列表清理）
+#[tauri::command]
+pub fn path_exists(path: String) -> Result<bool, String> {
+    let p = PathBuf::from(&path);
+    Ok(p.is_file())
+}
+
 /// 读取文本文件（UTF-8；失败时按有损解码）
 #[tauri::command]
 pub fn read_text_file(path: String) -> Result<String, String> {

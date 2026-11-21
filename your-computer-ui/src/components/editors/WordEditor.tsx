@@ -98,12 +98,46 @@ import { readOfficeZipBuffer, uint8ToBase64 } from "../../lib/localFile";
 import {
   clearWordRecent,
   loadWordRecent,
+  pruneWordRecent,
   pushWordRecent,
   removeWordRecent,
+  seedWordRecentDemo,
+  WORD_RECENT_DEMO,
   WORD_RECENT_EVENT,
+  WORD_RECENT_MENU_LIMIT,
   type WordRecentEntry,
 } from "../../lib/wordRecent";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
 import { EditorShell, fileNameFromPath } from "./EditorShell";
+
+function formatRecentTime(ts: number): string {
+  try {
+    return new Date(ts).toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "--";
+  }
+}
 
 type Props = { path: string | null };
 type RibbonTab = "home" | "insert" | "page" | "refs";
@@ -417,24 +451,12 @@ export function WordEditor({ path }: Props) {
   const activeDoc = docs.find((d) => d.id === activeId) ?? docs[0];
   const activePath = activeDoc?.path ?? null;
   const [recentFiles, setRecentFiles] = useState<WordRecentEntry[]>(() =>
-    loadWordRecent(),
+    WORD_RECENT_DEMO ? seedWordRecentDemo() : loadWordRecent(),
   );
+  const [recentManageOpen, setRecentManageOpen] = useState(false);
 
   const rememberRecent = useCallback((filePath: string, name?: string) => {
     setRecentFiles(pushWordRecent(filePath, name));
-  }, []);
-
-  useEffect(() => {
-    const sync = () => setRecentFiles(loadWordRecent());
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === null || e.key === "yc-word-recent") sync();
-    };
-    window.addEventListener(WORD_RECENT_EVENT, sync);
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener(WORD_RECENT_EVENT, sync);
-      window.removeEventListener("storage", onStorage);
-    };
   }, []);
 
   const [dirty, setDirty] = useState(false);
@@ -715,6 +737,104 @@ export function WordEditor({ path }: Props) {
     ],
   );
 
+  /** 按路径关闭页签；force 时跳过未保存确认（文件已失效） */
+  const closeDocsByPath = useCallback(
+    (filePath: string, opts?: { force?: boolean }) => {
+      const norm = filePath.replace(/\//g, "\\").toLowerCase();
+      const matches = docsRef.current.filter(
+        (d) =>
+          !!d.path && d.path.replace(/\//g, "\\").toLowerCase() === norm,
+      );
+      if (!matches.length) return;
+
+      const toClose: string[] = [];
+      for (const target of matches) {
+        if (!opts?.force && target.dirty) {
+          const ok = window.confirm(
+            `「${target.name}」尚未保存，确定关闭？`,
+          );
+          if (!ok) continue;
+        }
+        toClose.push(target.id);
+      }
+      if (!toClose.length) return;
+
+      const closeSet = new Set(toClose);
+      const wasActive = closeSet.has(activeIdRef.current);
+      if (wasActive) flushActiveToDocs();
+
+      setDocs((prev) => {
+        const next = prev.filter((d) => !closeSet.has(d.id));
+        if (!next.length) {
+          const blank = blankDoc(`未命名${untitledSeq.current}.docx`);
+          untitledSeq.current += 1;
+          queueMicrotask(() => {
+            setActiveId(blank.id);
+            applyData(blank.data);
+            setDirty(false);
+            void refreshWordCount();
+          });
+          return [blank];
+        }
+        if (wasActive) {
+          const fallback = next[next.length - 1];
+          queueMicrotask(() => {
+            void activateDoc(fallback.id);
+          });
+        }
+        return next;
+      });
+    },
+    [activateDoc, applyData, flushActiveToDocs, refreshWordCount],
+  );
+
+  /** 删除最近记录；若页签已打开则一并关掉 */
+  const dismissRecentPath = useCallback(
+    (filePath: string, opts?: { force?: boolean }) => {
+      setRecentFiles(removeWordRecent(filePath));
+      closeDocsByPath(filePath, opts);
+    },
+    [closeDocsByPath],
+  );
+
+  const pruneMissingRecent = useCallback(async () => {
+    // 演示数据为假路径，跳过存在性校验以免被清空
+    if (WORD_RECENT_DEMO) {
+      setRecentFiles(loadWordRecent());
+      return;
+    }
+    const before = loadWordRecent();
+    const next = await pruneWordRecent(async (p) => {
+      try {
+        return await invoke<boolean>("path_exists", { path: p });
+      } catch {
+        return false;
+      }
+    });
+    setRecentFiles(next);
+    const kept = new Set(
+      next.map((r) => r.path.replace(/\//g, "\\").toLowerCase()),
+    );
+    for (const item of before) {
+      const key = item.path.replace(/\//g, "\\").toLowerCase();
+      if (!kept.has(key)) closeDocsByPath(item.path, { force: true });
+    }
+  }, [closeDocsByPath]);
+
+  useEffect(() => {
+    const sync = () => setRecentFiles(loadWordRecent());
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key === "yc-word-recent") sync();
+    };
+    window.addEventListener(WORD_RECENT_EVENT, sync);
+    window.addEventListener("storage", onStorage);
+    void pruneMissingRecent();
+    return () => {
+      window.removeEventListener(WORD_RECENT_EVENT, sync);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [pruneMissingRecent]);
+
   const writeDocxToPath = useCallback(
     async (savePath: string) => {
       const c = cmd();
@@ -801,8 +921,23 @@ export function WordEditor({ path }: Props) {
 
   const openDocPath = useCallback(
     async (filePath: string) => {
+      // 打开前先确认文件仍在；不在则删记录并关掉对应页签
+      try {
+        const ok = await invoke<boolean>("path_exists", { path: filePath });
+        if (!ok) {
+          dismissRecentPath(filePath, { force: true });
+          setHint("文件不存在，已从最近打开中移除");
+          return;
+        }
+      } catch {
+        dismissRecentPath(filePath, { force: true });
+        setHint("无法读取该文件，已从最近打开中移除");
+        return;
+      }
+
       flushActiveToDocs();
       const existing = docsRef.current.find((d) => d.path === filePath);
+      const created = !existing;
       const tab =
         existing ??
         ({
@@ -812,7 +947,7 @@ export function WordEditor({ path }: Props) {
           data: null,
           dirty: false,
         } satisfies DocTab);
-      if (!existing) {
+      if (created) {
         setDocs((prev) => [...prev, tab]);
       }
       setActiveId(tab.id);
@@ -833,12 +968,13 @@ export function WordEditor({ path }: Props) {
           `打开失败: ${err instanceof Error ? err.message : String(err)}`,
         );
         setLoading(false);
-        // 文件不存在时从最近列表移除
-        setRecentFiles(removeWordRecent(filePath));
+        // 读不到：删记录并关掉页签（不删文件）
+        dismissRecentPath(filePath, { force: true });
       }
     },
     [
       captureActiveData,
+      dismissRecentPath,
       flushActiveToDocs,
       loadDocxIntoEditor,
       refreshWordCount,
@@ -897,6 +1033,7 @@ export function WordEditor({ path }: Props) {
           `打开失败: ${err instanceof Error ? err.message : String(err)}`,
         );
         setLoading(false);
+        if (focus.path) dismissRecentPath(focus.path, { force: true });
       }
     } catch (err) {
       setHint(`打开失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -904,6 +1041,7 @@ export function WordEditor({ path }: Props) {
     }
   }, [
     captureActiveData,
+    dismissRecentPath,
     flushActiveToDocs,
     loadDocxIntoEditor,
     refreshWordCount,
@@ -1947,37 +2085,78 @@ export function WordEditor({ path }: Props) {
                     <FolderOpen /> 打开
                     <DropdownMenuShortcut>Ctrl+O</DropdownMenuShortcut>
                   </DropdownMenuItem>
-                  <DropdownMenuSub>
+                  <DropdownMenuSub
+                    onOpenChange={(open) => {
+                      if (open) void pruneMissingRecent();
+                    }}
+                  >
                     <DropdownMenuSubTrigger>
                       <Clock /> 最近打开
                     </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="min-w-[220px] max-w-[360px]">
+                    <DropdownMenuSubContent className="min-w-[240px] max-w-[380px]">
                       {recentFiles.length === 0 ? (
                         <DropdownMenuItem disabled>
                           暂无最近文件
                         </DropdownMenuItem>
                       ) : (
-                        recentFiles.map((item) => (
-                          <DropdownMenuItem
-                            key={item.path}
-                            className="flex flex-col items-start gap-0.5 py-1.5"
-                            title={item.path}
-                            onClick={() => void openDocPath(item.path)}
-                          >
-                            <span className="w-full truncate text-[13px]">
-                              {item.name}
-                            </span>
-                            <span className="w-full truncate text-[11px] text-muted-foreground">
-                              {item.path}
-                            </span>
-                          </DropdownMenuItem>
-                        ))
+                        recentFiles
+                          .slice(0, WORD_RECENT_MENU_LIMIT)
+                          .map((item) => (
+                            <div
+                              key={item.path}
+                              className="group flex items-center gap-0.5 rounded-md pr-1 focus-within:bg-accent hover:bg-accent"
+                            >
+                              <DropdownMenuItem
+                                className="min-w-0 flex-1 flex-col items-start gap-0.5 py-1.5 focus:bg-transparent"
+                                title={item.path}
+                                onClick={() => void openDocPath(item.path)}
+                              >
+                                <span className="w-full truncate text-[13px]">
+                                  {item.name}
+                                </span>
+                                <span className="w-full truncate text-[11px] text-muted-foreground">
+                                  {item.path}
+                                </span>
+                              </DropdownMenuItem>
+                              <button
+                                type="button"
+                                title="从最近打开中移除（不删除文件；若已打开页签会一并关闭）"
+                                className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-60 hover:bg-black/[0.06] hover:text-[#ff3b30] hover:opacity-100"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  dismissRecentPath(item.path);
+                                }}
+                                onPointerDown={(e) => e.stopPropagation()}
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ))
                       )}
-                      {recentFiles.length > 0 ? (
+                      {recentFiles.length > WORD_RECENT_MENU_LIMIT ? (
                         <>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
-                            onClick={() => setRecentFiles(clearWordRecent())}
+                            className="justify-center text-[#0165e1] focus:text-[#0165e1]"
+                            onClick={() => setRecentManageOpen(true)}
+                          >
+                            查看全部
+                          </DropdownMenuItem>
+                        </>
+                      ) : null}
+                      {recentFiles.length > 0 &&
+                      recentFiles.length <= WORD_RECENT_MENU_LIMIT ? (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => {
+                              const list = [...recentFiles];
+                              setRecentFiles(clearWordRecent());
+                              for (const item of list) {
+                                closeDocsByPath(item.path);
+                              }
+                            }}
                           >
                             清除最近打开
                           </DropdownMenuItem>
@@ -2644,6 +2823,135 @@ export function WordEditor({ path }: Props) {
           onApply={applyLink}
         />
       ) : null}
+
+      <Dialog
+        open={recentManageOpen}
+        onOpenChange={(open) => {
+          setRecentManageOpen(open);
+          if (open) void pruneMissingRecent();
+        }}
+      >
+        <DialogContent
+          showCloseButton={false}
+          className="z-[10000] flex w-[720px] max-w-[calc(100vw-32px)] flex-col gap-0 overflow-hidden rounded-[12px] bg-white p-0 text-[#1d1d1f] shadow-[0_24px_64px_rgba(0,0,0,0.28)] ring-1 ring-black/10 sm:max-w-[720px]"
+        >
+          <DialogHeader className="h-9 shrink-0 flex-row items-center gap-0 pl-4 pr-2">
+            <DialogTitle className="text-[13px] font-medium text-[#1d1d1f]">
+              最近打开
+            </DialogTitle>
+            <DialogClose
+              render={
+                <button
+                  type="button"
+                  aria-label="关闭"
+                  className="ml-auto flex size-6 items-center justify-center rounded-[5px] text-[#8e8e93] transition-colors hover:bg-black/[0.06] hover:text-[#1d1d1f]"
+                />
+              }
+            >
+              <X size={14} />
+            </DialogClose>
+          </DialogHeader>
+
+          <div className="max-h-[min(480px,70vh)] overflow-auto px-3 py-2">
+            {recentFiles.length === 0 ? (
+              <p className="px-1 py-8 text-center text-[13px] text-[#8e8e93]">
+                暂无最近打开记录
+              </p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="w-[28%] text-[12px] text-[#6e6e73]">
+                      名称
+                    </TableHead>
+                    <TableHead className="text-[12px] text-[#6e6e73]">
+                      路径
+                    </TableHead>
+                    <TableHead className="w-[140px] text-[12px] text-[#6e6e73]">
+                      打开时间
+                    </TableHead>
+                    <TableHead className="w-[120px] text-right text-[12px] text-[#6e6e73]">
+                      操作
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {recentFiles.map((item) => (
+                    <TableRow key={item.path}>
+                      <TableCell
+                        className="max-w-[160px] truncate text-[13px]"
+                        title={item.name}
+                      >
+                        {item.name}
+                      </TableCell>
+                      <TableCell
+                        className="max-w-[280px] truncate text-[12px] text-[#6e6e73] whitespace-normal"
+                        title={item.path}
+                      >
+                        <span className="line-clamp-2 break-all">
+                          {item.path}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-[12px] text-[#6e6e73] tabular-nums">
+                        {formatRecentTime(item.openedAt)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="inline-flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-[12px] text-[#0165e1] hover:text-[#0165e1]"
+                            onClick={() => {
+                              setRecentManageOpen(false);
+                              void openDocPath(item.path);
+                            }}
+                          >
+                            打开
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-[12px] text-[#ff3b30] hover:bg-[#ff3b30]/10 hover:text-[#ff3b30]"
+                            onClick={() => dismissRecentPath(item.path)}
+                          >
+                            移除
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-2 px-4 py-3">
+            <span className="text-[12px] text-[#8e8e93]">
+              共 {recentFiles.length} 条（仅删除记录，不删除文件）
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                className="h-7 rounded-[6px] border-black/[0.12] bg-white px-3 text-[12px] font-normal text-[#1d1d1f] hover:bg-black/[0.03] disabled:opacity-40"
+                disabled={recentFiles.length === 0}
+                onClick={() => {
+                  const list = [...recentFiles];
+                  setRecentFiles(clearWordRecent());
+                  for (const item of list) closeDocsByPath(item.path);
+                }}
+              >
+                全部清除
+              </Button>
+              <Button
+                className="h-7 rounded-[6px] bg-[#0165e1] px-3.5 text-[12px] font-medium text-white shadow-none hover:bg-[#0165e1]/90"
+                onClick={() => setRecentManageOpen(false)}
+              >
+                关闭
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </EditorShell>
   );
 }
