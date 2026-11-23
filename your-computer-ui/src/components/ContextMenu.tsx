@@ -118,6 +118,8 @@ function buildTrashRows(kind: ContextMenuKind): MenuRow[] {
 function buildFavoritesRows(
   kind: ContextMenuKind,
   isFavoriteFolder: boolean,
+  isFile = false,
+  multiSelect = false,
 ): MenuRow[] {
   if (kind === "blank") {
     return [
@@ -147,9 +149,24 @@ function buildFavoritesRows(
       },
     ];
   }
+  const openRows: MenuRow[] = multiSelect
+    ? []
+    : [
+        { type: "item", id: "open", label: "打开", icon: SquareArrowOutUpRight },
+        ...(isFile
+          ? [
+              {
+                type: "item" as const,
+                id: "open-with",
+                label: "打开方式",
+                chevron: true,
+              },
+            ]
+          : []),
+      ];
   return [
-    { type: "item", id: "open", label: "打开", icon: SquareArrowOutUpRight },
-    { type: "sep" },
+    ...openRows,
+    ...(openRows.length ? [{ type: "sep" as const }] : []),
     {
       type: "item",
       id: "fav-remove",
@@ -171,7 +188,7 @@ function buildRows(
   enableTags = true,
 ): MenuRow[] {
   if (surface === "favorites") {
-    return buildFavoritesRows(kind, isFavoriteFolder);
+    return buildFavoritesRows(kind, isFavoriteFolder, isFile, multiSelect);
   }
   if (surface === "trash") {
     return buildTrashRows(kind);

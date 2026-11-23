@@ -12,6 +12,7 @@ import {
   BuiltinEditorWindow,
   type BuiltinEditorKind,
 } from "./components/editors/BuiltinEditorWindow";
+import { AppDialogHost } from "./lib/appDialog";
 import "./index.css";
 
 const params = new URLSearchParams(window.location.search);
@@ -51,23 +52,25 @@ if (confirmRaw) {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {confirmPayload ? (
-      <ConfirmDeleteWindow payload={confirmPayload} />
-    ) : editorKind ? (
-      <BuiltinEditorWindow kind={editorKind} path={editorFile} />
-    ) : infoPath ? (
-      <GetInfoWindow path={infoPath} />
-    ) : isSearchWindow ? (
-      <SearchWindow />
-    ) : isSettingsWindow ? (
-      <SettingsPanel />
-    ) : (
-      <App
-        initialPath={browsePath}
-        zoomIn={zoomIn}
-        pickMode={pickMode}
-        pickTarget={pickTarget}
-      />
-    )}
+    <AppDialogHost>
+      {confirmPayload ? (
+        <ConfirmDeleteWindow payload={confirmPayload} />
+      ) : editorKind ? (
+        <BuiltinEditorWindow kind={editorKind} path={editorFile} />
+      ) : infoPath ? (
+        <GetInfoWindow path={infoPath} />
+      ) : isSearchWindow ? (
+        <SearchWindow />
+      ) : isSettingsWindow ? (
+        <SettingsPanel />
+      ) : (
+        <App
+          initialPath={browsePath}
+          zoomIn={zoomIn}
+          pickMode={pickMode}
+          pickTarget={pickTarget}
+        />
+      )}
+    </AppDialogHost>
   </React.StrictMode>,
 );

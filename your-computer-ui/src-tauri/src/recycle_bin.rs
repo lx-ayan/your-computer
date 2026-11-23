@@ -1,13 +1,13 @@
 //! Windows 回收站：列举 / 还原 / 永久删除 / 清空
 //! 列举与桌面/最近使用同理：指纹未变则直接返回缓存，不重扫。
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecycleEntry {
     pub id: String,
@@ -30,18 +30,67 @@ struct RecycleCache {
 
 static RECYCLE_CACHE: Mutex<Option<RecycleCache>> = Mutex::new(None);
 
+const RECYCLE_DISK_KEY: &str = "recycle_bin";
+
 /// 主动失效（移入/还原/删除/清空后调用）
 pub fn invalidate_recycle_cache() {
     if let Ok(mut guard) = RECYCLE_CACHE.lock() {
         *guard = None;
     }
+    crate::disk_cache::remove(RECYCLE_DISK_KEY);
+}
+
+/// 只读内存/磁盘缓存，不扫描（用于切到废纸篓时立刻上屏）
+#[tauri::command]
+pub fn peek_recycle_bin() -> Option<Vec<RecycleEntry>> {
+    if let Ok(guard) = RECYCLE_CACHE.lock() {
+        if let Some(cache) = guard.as_ref() {
+            return Some(cache.entries.clone());
+        }
+    }
+    if let Some((fp, entries)) =
+        crate::disk_cache::load_any::<Vec<RecycleEntry>>(RECYCLE_DISK_KEY)
+    {
+        if let Ok(mut guard) = RECYCLE_CACHE.lock() {
+            *guard = Some(RecycleCache {
+                fingerprint: fp,
+                entries: entries.clone(),
+            });
+        }
+        return Some(entries);
+    }
+    None
 }
 
 #[tauri::command]
-pub fn list_recycle_bin() -> Result<Vec<RecycleEntry>, String> {
+pub async fn list_recycle_bin() -> Result<Vec<RecycleEntry>, String> {
     #[cfg(windows)]
     {
-        list_recycle_bin_cached()
+        // 指纹命中：内存 / 磁盘立刻返回，不堵 UI
+        let fingerprint = recycle_fingerprint();
+        if let Ok(guard) = RECYCLE_CACHE.lock() {
+            if let Some(cache) = guard.as_ref() {
+                if cache.fingerprint == fingerprint {
+                    return Ok(cache.entries.clone());
+                }
+            }
+        }
+        if let Some(entries) =
+            crate::disk_cache::load_if_match::<Vec<RecycleEntry>>(RECYCLE_DISK_KEY, fingerprint)
+        {
+            if let Ok(mut guard) = RECYCLE_CACHE.lock() {
+                *guard = Some(RecycleCache {
+                    fingerprint,
+                    entries: entries.clone(),
+                });
+            }
+            return Ok(entries);
+        }
+
+        // 指纹变了：先尽量用旧磁盘缓存上屏（由前端再刷）；扫描放到阻塞线程池
+        tauri::async_runtime::spawn_blocking(move || list_recycle_bin_scan_and_store(fingerprint))
+            .await
+            .map_err(|e| format!("回收站扫描失败: {e}"))?
     }
     #[cfg(not(windows))]
     {
@@ -148,23 +197,27 @@ fn recycle_fingerprint() -> u64 {
 }
 
 #[cfg(windows)]
-fn list_recycle_bin_cached() -> Result<Vec<RecycleEntry>, String> {
-    let fingerprint = recycle_fingerprint();
-    if let Ok(guard) = RECYCLE_CACHE.lock() {
-        if let Some(cache) = guard.as_ref() {
-            if cache.fingerprint == fingerprint {
-                return Ok(cache.entries.clone());
+fn list_recycle_bin_scan_and_store(fingerprint: u64) -> Result<Vec<RecycleEntry>, String> {
+    // 扫描前再核一次指纹，避免并发重复扫
+    let live = recycle_fingerprint();
+    if live == fingerprint {
+        if let Ok(guard) = RECYCLE_CACHE.lock() {
+            if let Some(cache) = guard.as_ref() {
+                if cache.fingerprint == live {
+                    return Ok(cache.entries.clone());
+                }
             }
         }
     }
-
+    let fp = live;
     let entries = list_recycle_bin_scan()?;
     if let Ok(mut guard) = RECYCLE_CACHE.lock() {
         *guard = Some(RecycleCache {
-            fingerprint,
+            fingerprint: fp,
             entries: entries.clone(),
         });
     }
+    crate::disk_cache::save(RECYCLE_DISK_KEY, fp, &entries);
     Ok(entries)
 }
 

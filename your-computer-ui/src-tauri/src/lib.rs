@@ -1,3 +1,4 @@
+mod disk_cache;
 mod drives;
 mod favorites;
 mod fs_info;
@@ -20,6 +21,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_drag::init())
         .setup(|app| {
+            if let Ok(dir) = app.path().app_data_dir() {
+                disk_cache::init(dir);
+            } else if let Ok(base) = std::env::var("LOCALAPPDATA")
+                .or_else(|_| std::env::var("APPDATA"))
+            {
+                disk_cache::init(std::path::PathBuf::from(base).join("your-computer-ui"));
+            }
             let db = favorites::init_db(app.handle())?;
             app.manage(db);
             Ok(())
@@ -38,6 +46,7 @@ pub fn run() {
             fs_ops::move_path,
             fs_ops::copy_into,
             fs_ops::trash_path,
+            recycle_bin::peek_recycle_bin,
             recycle_bin::list_recycle_bin,
             recycle_bin::restore_recycle_bin_item,
             recycle_bin::delete_recycle_bin_item,

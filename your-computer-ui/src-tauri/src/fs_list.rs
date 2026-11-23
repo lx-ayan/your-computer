@@ -1,11 +1,11 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirEntryInfo {
     pub id: String,
@@ -28,8 +28,32 @@ struct DirListCache {
 static DIR_LIST_CACHE: LazyLock<Mutex<HashMap<String, DirListCache>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// 列表格式版本；改返回结构时递增以失效旧缓存（v3：列表不再内嵌外壳图标）
-const LIST_CACHE_VER: u64 = 3;
+/// 列表格式版本；改返回结构时递增以失效旧缓存（v4：子项指纹 + 磁盘持久化）
+const LIST_CACHE_VER: u64 = 4;
+
+fn disk_key(cache_key: &str) -> String {
+    format!("dir:{cache_key}")
+}
+
+fn remember(cache_key: &str, fingerprint: u64, entries: &[DirEntryInfo]) {
+    if let Ok(mut guard) = DIR_LIST_CACHE.lock() {
+        guard.insert(
+            cache_key.to_string(),
+            DirListCache {
+                fingerprint,
+                entries: entries.to_vec(),
+            },
+        );
+        if guard.len() > 24 {
+            let keep = guard.remove(cache_key);
+            guard.clear();
+            if let Some(v) = keep {
+                guard.insert(cache_key.to_string(), v);
+            }
+        }
+    }
+    crate::disk_cache::save(&disk_key(cache_key), fingerprint, &entries.to_vec());
+}
 
 #[tauri::command]
 pub fn list_dir(path: String) -> Result<Vec<DirEntryInfo>, String> {
@@ -52,26 +76,15 @@ pub fn list_dir(path: String) -> Result<Vec<DirEntryInfo>, String> {
         }
     }
 
-    let entries = list_dir_uncached(&root)?;
-
-    if let Ok(mut guard) = DIR_LIST_CACHE.lock() {
-        guard.insert(
-            cache_key.clone(),
-            DirListCache {
-                fingerprint,
-                entries: entries.clone(),
-            },
-        );
-        // 防止缓存无限涨
-        if guard.len() > 24 {
-            let keep = guard.remove(&cache_key);
-            guard.clear();
-            if let Some(v) = keep {
-                guard.insert(cache_key, v);
-            }
-        }
+    if let Some(entries) =
+        crate::disk_cache::load_if_match::<Vec<DirEntryInfo>>(&disk_key(&cache_key), fingerprint)
+    {
+        remember(&cache_key, fingerprint, &entries);
+        return Ok(entries);
     }
 
+    let entries = list_dir_uncached(&root)?;
+    remember(&cache_key, fingerprint, &entries);
     Ok(entries)
 }
 
@@ -80,9 +93,12 @@ pub fn invalidate_dir_cache(path: &str) {
     let key = normalize_path_key(Path::new(path));
     if let Ok(mut guard) = DIR_LIST_CACHE.lock() {
         guard.remove(&key);
+        crate::disk_cache::remove(&disk_key(&key));
         // 同时失效父目录（新建/删除发生在子项时父列表需刷新）
         if let Some(parent) = Path::new(path).parent() {
-            guard.remove(&normalize_path_key(parent));
+            let pk = normalize_path_key(parent);
+            guard.remove(&pk);
+            crate::disk_cache::remove(&disk_key(&pk));
         }
     }
 }
@@ -101,19 +117,44 @@ fn normalize_path_key(path: &Path) -> String {
     out
 }
 
-/// 目录指纹：只用目录自身 mtime（避免大目录二次全量遍历卡死）
+/// 目录指纹：子项名 + 数量 + 最大 mtime（Windows 桌面文件夹自身 mtime 常不随子项变化）
 fn dir_fingerprint(root: &Path) -> u64 {
-    let Ok(meta) = fs::metadata(root) else {
-        return LIST_CACHE_VER;
-    };
-    let Ok(modified) = meta.modified() else {
-        return LIST_CACHE_VER;
-    };
-    let Ok(dur) = modified.duration_since(SystemTime::UNIX_EPOCH) else {
-        return LIST_CACHE_VER;
-    };
-    dur.as_millis() as u64
-        ^ (LIST_CACHE_VER.wrapping_mul(9_007_199))
+    let mut count: u64 = 0;
+    let mut max_ms: u64 = 0;
+    let mut name_hash: u64 = 0xcbf2_9ce4_8422_2325;
+
+    if let Ok(meta) = fs::metadata(root) {
+        if let Ok(modified) = meta.modified() {
+            if let Ok(dur) = modified.duration_since(SystemTime::UNIX_EPOCH) {
+                max_ms = max_ms.max(dur.as_millis() as u64);
+            }
+        }
+    }
+
+    if let Ok(read) = fs::read_dir(root) {
+        for item in read.flatten() {
+            count += 1;
+            let name = item.file_name();
+            let n = name.to_string_lossy();
+            for b in n.as_bytes() {
+                name_hash ^= u64::from(*b);
+                name_hash = name_hash.wrapping_mul(0x1000_0000_01b3);
+            }
+            if let Ok(meta) = item.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(dur) = modified.duration_since(SystemTime::UNIX_EPOCH) {
+                        max_ms = max_ms.max(dur.as_millis() as u64);
+                    }
+                }
+            }
+        }
+    }
+
+    count
+        .wrapping_mul(1_000_000_007)
+        .wrapping_add(max_ms.wrapping_mul(1_000_003))
+        .wrapping_add(name_hash)
+        .wrapping_add(LIST_CACHE_VER.wrapping_mul(9_007_199))
 }
 
 fn list_dir_uncached(root: &Path) -> Result<Vec<DirEntryInfo>, String> {

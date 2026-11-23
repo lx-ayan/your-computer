@@ -13,12 +13,6 @@ export const WORD_RECENT_MAX = 50;
 export const WORD_RECENT_MENU_LIMIT = 10;
 export const WORD_RECENT_EVENT = "word-recent-changed";
 
-/**
- * 演示数据开关：为 true 时写入 15 条模拟记录（便于看「查看全部」）。
- * 看完效果后改回 false。
- */
-export const WORD_RECENT_DEMO = true;
-
 function fileNameFromPath(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 }
@@ -78,34 +72,6 @@ function writeRaw(list: WordRecentEntry[]): WordRecentEntry[] {
 
 export function loadWordRecent(): WordRecentEntry[] {
   return readRaw();
-}
-
-/** 写入演示用最近打开列表（假路径，仅 UI 预览） */
-export function seedWordRecentDemo(): WordRecentEntry[] {
-  const names = [
-    "项目计划.docx",
-    "会议纪要.docx",
-    "产品需求.docx",
-    "周报-第12周.docx",
-    "合同草案.docx",
-    "面试题库.docx",
-    "技术方案.docx",
-    "培训手册.docx",
-    "客户反馈整理.docx",
-    "发布说明.docx",
-    "预算表说明.docx",
-    "设计评审记录.docx",
-    "上线检查清单.docx",
-    "对外公告.docx",
-    "未命名草稿.docx",
-  ];
-  const now = Date.now();
-  const list: WordRecentEntry[] = names.map((name, i) => ({
-    path: `E:\\Documents\\VWordDemo\\${name}`,
-    name,
-    openedAt: now - i * 45 * 60 * 1000,
-  }));
-  return writeRaw(list);
 }
 
 /** 记录一次打开/保存；同路径置顶 */

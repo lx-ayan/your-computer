@@ -17,6 +17,9 @@ export default defineConfig(() => ({
       "@": path.resolve(rootDir, "./src"),
     },
   },
+  optimizeDeps: {
+    include: ["@fortune-sheet/react", "@fortune-sheet/core", "exceljs", "xlsx"],
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

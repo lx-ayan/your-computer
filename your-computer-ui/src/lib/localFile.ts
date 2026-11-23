@@ -7,13 +7,13 @@ function looksLikeZip(buf: ArrayBuffer): boolean {
   return u[0] === 0x50 && u[1] === 0x4b;
 }
 
-/** 可靠读取本地二进制文件为 ArrayBuffer */
+/** 可靠读取本地二进制文件为 ArrayBuffer（允许 0 字节空文件） */
 export async function readLocalArrayBuffer(path: string): Promise<ArrayBuffer> {
   // 优先后端 base64：中文路径下 asset 协议更易踩坑
   try {
     const b64 = await invoke<string>("read_file_base64", { path });
-    const buf = base64ToArrayBuffer(b64);
-    if (buf.byteLength > 0) return buf;
+    // 空字符串 / 空文件：直接返回 0 字节，不再走 asset 回退（避免误报）
+    return base64ToArrayBuffer(b64 ?? "");
   } catch (err) {
     console.warn("read_file_base64 failed, try asset protocol", err);
   }
@@ -21,9 +21,7 @@ export async function readLocalArrayBuffer(path: string): Promise<ArrayBuffer> {
   const url = convertFileSrc(path);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`读取失败 HTTP ${res.status}`);
-  const buf = await res.arrayBuffer();
-  if (!buf.byteLength) throw new Error("读取到空文件");
-  return buf;
+  return res.arrayBuffer();
 }
 
 /** 读取 Office 压缩包（docx/xlsx），并校验 ZIP 头 */

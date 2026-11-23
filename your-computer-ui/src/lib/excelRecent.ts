@@ -1,0 +1,123 @@
+/** VExcel 最近打开的表格（localStorage） */
+
+export type ExcelRecentEntry = {
+  path: string;
+  name: string;
+  openedAt: number;
+};
+
+export const EXCEL_RECENT_KEY = "yc-excel-recent";
+/** 本地最多保留条数 */
+export const EXCEL_RECENT_MAX = 50;
+/** 「最近打开」子菜单最多展示条数，超出用「查看全部」 */
+export const EXCEL_RECENT_MENU_LIMIT = 10;
+export const EXCEL_RECENT_EVENT = "excel-recent-changed";
+
+function fileNameFromPath(path: string): string {
+  return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+}
+
+function normalizePath(path: string): string {
+  return path.trim().replace(/\//g, "\\");
+}
+
+function readRaw(): ExcelRecentEntry[] {
+  try {
+    const raw = localStorage.getItem(EXCEL_RECENT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: ExcelRecentEntry[] = [];
+    const seen = new Set<string>();
+    for (const row of parsed) {
+      const path =
+        typeof row?.path === "string" ? normalizePath(row.path) : "";
+      if (!path || seen.has(path.toLowerCase())) continue;
+      seen.add(path.toLowerCase());
+      out.push({
+        path,
+        name:
+          typeof row?.name === "string" && row.name
+            ? row.name
+            : fileNameFromPath(path),
+        openedAt:
+          typeof row?.openedAt === "number" && Number.isFinite(row.openedAt)
+            ? row.openedAt
+            : Date.now(),
+      });
+      if (out.length >= EXCEL_RECENT_MAX) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function writeRaw(list: ExcelRecentEntry[]): ExcelRecentEntry[] {
+  const next = list.slice(0, EXCEL_RECENT_MAX);
+  try {
+    localStorage.setItem(EXCEL_RECENT_KEY, JSON.stringify(next));
+  } catch (err) {
+    console.error("save excel recent failed", err);
+  }
+  try {
+    window.dispatchEvent(
+      new CustomEvent(EXCEL_RECENT_EVENT, { detail: next }),
+    );
+  } catch {
+    /* ignore */
+  }
+  return next;
+}
+
+export function loadExcelRecent(): ExcelRecentEntry[] {
+  return readRaw();
+}
+
+/** 记录一次打开/保存；同路径置顶 */
+export function pushExcelRecent(
+  path: string,
+  name?: string,
+): ExcelRecentEntry[] {
+  const p = normalizePath(path);
+  if (!p) return readRaw();
+  const entry: ExcelRecentEntry = {
+    path: p,
+    name: name || fileNameFromPath(p),
+    openedAt: Date.now(),
+  };
+  const rest = readRaw().filter(
+    (r) => r.path.toLowerCase() !== p.toLowerCase(),
+  );
+  return writeRaw([entry, ...rest]);
+}
+
+export function removeExcelRecent(path: string): ExcelRecentEntry[] {
+  const p = normalizePath(path).toLowerCase();
+  return writeRaw(readRaw().filter((r) => r.path.toLowerCase() !== p));
+}
+
+export function clearExcelRecent(): ExcelRecentEntry[] {
+  return writeRaw([]);
+}
+
+/**
+ * 按存在性校验清理最近打开：文件已删 / 读不到则去掉记录（不删文件）。
+ * `exists` 返回 false 或抛错都会移除该项。
+ */
+export async function pruneExcelRecent(
+  exists: (path: string) => Promise<boolean>,
+): Promise<ExcelRecentEntry[]> {
+  const cur = readRaw();
+  if (!cur.length) return cur;
+  const kept: ExcelRecentEntry[] = [];
+  for (const item of cur) {
+    try {
+      if (await exists(item.path)) kept.push(item);
+    } catch {
+      /* 读不到则丢弃记录 */
+    }
+  }
+  if (kept.length === cur.length) return cur;
+  return writeRaw(kept);
+}

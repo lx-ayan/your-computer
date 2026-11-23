@@ -67,7 +67,9 @@ import {
   X,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { DocContextMenu, type DocMenuNode } from "./DocContextMenu";
+import { ConfirmCloseDialog } from "./ConfirmCloseDialog";
 import {
   ColorPickerPop,
   HIGHLIGHT_COLORS,
@@ -101,8 +103,6 @@ import {
   pruneWordRecent,
   pushWordRecent,
   removeWordRecent,
-  seedWordRecentDemo,
-  WORD_RECENT_DEMO,
   WORD_RECENT_EVENT,
   WORD_RECENT_MENU_LIMIT,
   type WordRecentEntry,
@@ -357,6 +357,7 @@ function GroupLabel({ children }: { children: ReactNode }) {
   );
 }
 
+/** 左：应用当前色；右：打开色板 */
 function ColorPickBtn({
   title,
   color,
@@ -370,7 +371,7 @@ function ColorPickBtn({
   onPick: (color: string | null) => void;
   children: ReactNode;
 }) {
-  const btnRef = useRef<HTMLButtonElement>(null);
+  const dropRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<{
     left: number;
@@ -380,38 +381,50 @@ function ColorPickBtn({
   } | null>(null);
   const palette = mode === "fore" ? TEXT_COLORS : HIGHLIGHT_COLORS;
   const fallback = mode === "fore" ? "#1d1d1f" : "#ffe566";
+  const current = color || fallback;
 
   return (
     <>
-      <button
-        ref={btnRef}
-        type="button"
-        title={title}
-        className="relative text-[6px] inline-flex h-7 min-w-7 flex-col items-center justify-center rounded-[5px] px-1.5 text-[#1d1d1f] hover:bg-black/[0.06]"
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={() => {
-          const el = btnRef.current;
-          if (!el) return;
-          const r = el.getBoundingClientRect();
-          setAnchor({
-            left: r.left,
-            top: r.top,
-            right: r.right,
-            bottom: r.bottom,
-          });
-          setOpen(true);
-        }}
-      >
-        {children}
-        <span
-          className="mt-0.5 h-[3px] w-3.5 rounded-[1px]"
-          style={{ background: color || fallback }}
-        />
-      </button>
+      <div className="inline-flex h-7 items-stretch overflow-hidden rounded-[5px] text-[6px] hover:bg-black/[0.06]">
+        <button
+          type="button"
+          title={title}
+          className="inline-flex min-w-7 flex-col items-center justify-center px-1.5 text-[#1d1d1f]"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => onPick(current)}
+        >
+          {children}
+          <span
+            className="mt-0.5 h-[3px] w-3.5 rounded-[1px]"
+            style={{ background: current }}
+          />
+        </button>
+        <button
+          ref={dropRef}
+          type="button"
+          title={`${title} - 更多`}
+          className="inline-flex items-center px-0.5 text-[#1d1d1f]"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            const el = dropRef.current;
+            if (!el) return;
+            const r = el.getBoundingClientRect();
+            setAnchor({
+              left: r.left,
+              top: r.top,
+              right: r.right,
+              bottom: r.bottom,
+            });
+            setOpen(true);
+          }}
+        >
+          <ChevronDown size={10} className="opacity-55" />
+        </button>
+      </div>
       {open && anchor ? (
         <ColorPickerPop
           anchor={anchor}
-          value={color || fallback}
+          value={current}
           colors={palette}
           clearLabel={mode === "back" ? "清除高亮" : undefined}
           title={title}
@@ -451,9 +464,13 @@ export function WordEditor({ path }: Props) {
   const activeDoc = docs.find((d) => d.id === activeId) ?? docs[0];
   const activePath = activeDoc?.path ?? null;
   const [recentFiles, setRecentFiles] = useState<WordRecentEntry[]>(() =>
-    WORD_RECENT_DEMO ? seedWordRecentDemo() : loadWordRecent(),
+    loadWordRecent(),
   );
   const [recentManageOpen, setRecentManageOpen] = useState(false);
+  const [closeConfirm, setCloseConfirm] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
 
   const rememberRecent = useCallback((filePath: string, name?: string) => {
     setRecentFiles(pushWordRecent(filePath, name));
@@ -737,44 +754,21 @@ export function WordEditor({ path }: Props) {
     ],
   );
 
-  /** 按路径关闭页签；force 时跳过未保存确认（文件已失效） */
-  const closeDocsByPath = useCallback(
-    (filePath: string, opts?: { force?: boolean }) => {
-      const norm = filePath.replace(/\//g, "\\").toLowerCase();
-      const matches = docsRef.current.filter(
-        (d) =>
-          !!d.path && d.path.replace(/\//g, "\\").toLowerCase() === norm,
-      );
-      if (!matches.length) return;
-
-      const toClose: string[] = [];
-      for (const target of matches) {
-        if (!opts?.force && target.dirty) {
-          const ok = window.confirm(
-            `「${target.name}」尚未保存，确定关闭？`,
-          );
-          if (!ok) continue;
-        }
-        toClose.push(target.id);
-      }
-      if (!toClose.length) return;
-
-      const closeSet = new Set(toClose);
+  /** 真正关掉页签；若已无标签则关闭窗口 */
+  const performCloseDocs = useCallback(
+    (ids: string[]) => {
+      if (!ids.length) return;
+      const closeSet = new Set(ids);
       const wasActive = closeSet.has(activeIdRef.current);
       if (wasActive) flushActiveToDocs();
 
       setDocs((prev) => {
         const next = prev.filter((d) => !closeSet.has(d.id));
         if (!next.length) {
-          const blank = blankDoc(`未命名${untitledSeq.current}.docx`);
-          untitledSeq.current += 1;
           queueMicrotask(() => {
-            setActiveId(blank.id);
-            applyData(blank.data);
-            setDirty(false);
-            void refreshWordCount();
+            void getCurrentWindow().close();
           });
-          return [blank];
+          return prev;
         }
         if (wasActive) {
           const fallback = next[next.length - 1];
@@ -785,7 +779,29 @@ export function WordEditor({ path }: Props) {
         return next;
       });
     },
-    [activateDoc, applyData, flushActiveToDocs, refreshWordCount],
+    [activateDoc, flushActiveToDocs],
+  );
+
+  /** 按路径关闭页签；force 时跳过未保存确认（文件已失效） */
+  const closeDocsByPath = useCallback(
+    (filePath: string, opts?: { force?: boolean }) => {
+      const norm = filePath.replace(/\//g, "\\").toLowerCase();
+      const matches = docsRef.current.filter(
+        (d) =>
+          !!d.path && d.path.replace(/\//g, "\\").toLowerCase() === norm,
+      );
+      if (!matches.length) return;
+
+      if (!opts?.force) {
+        const dirty = matches.find((d) => d.dirty);
+        if (dirty) {
+          setCloseConfirm({ id: dirty.id, name: dirty.name });
+          return;
+        }
+      }
+      performCloseDocs(matches.map((d) => d.id));
+    },
+    [performCloseDocs],
   );
 
   /** 删除最近记录；若页签已打开则一并关掉 */
@@ -798,11 +814,6 @@ export function WordEditor({ path }: Props) {
   );
 
   const pruneMissingRecent = useCallback(async () => {
-    // 演示数据为假路径，跳过存在性校验以免被清空
-    if (WORD_RECENT_DEMO) {
-      setRecentFiles(loadWordRecent());
-      return;
-    }
     const before = loadWordRecent();
     const next = await pruneWordRecent(async (p) => {
       try {
@@ -1050,35 +1061,15 @@ export function WordEditor({ path }: Props) {
 
   const onCloseDoc = useCallback(
     (id: string) => {
-      if (id === activeIdRef.current) flushActiveToDocs();
       const target = docsRef.current.find((d) => d.id === id);
-      if (target?.dirty) {
-        const ok = window.confirm(`「${target.name}」尚未保存，确定关闭？`);
-        if (!ok) return;
+      if (!target) return;
+      if (target.dirty) {
+        setCloseConfirm({ id: target.id, name: target.name });
+        return;
       }
-      setDocs((prev) => {
-        const next = prev.filter((d) => d.id !== id);
-        if (!next.length) {
-          const blank = blankDoc(`未命名${untitledSeq.current}.docx`);
-          untitledSeq.current += 1;
-          queueMicrotask(() => {
-            setActiveId(blank.id);
-            applyData(blank.data);
-            setDirty(false);
-            void refreshWordCount();
-          });
-          return [blank];
-        }
-        if (id === activeIdRef.current) {
-          const fallback = next[next.length - 1];
-          queueMicrotask(() => {
-            void activateDoc(fallback.id);
-          });
-        }
-        return next;
-      });
+      performCloseDocs([id]);
     },
-    [activateDoc, applyData, flushActiveToDocs, refreshWordCount],
+    [performCloseDocs],
   );
 
   const onPrint = useCallback(() => {
@@ -2823,6 +2814,17 @@ export function WordEditor({ path }: Props) {
           onApply={applyLink}
         />
       ) : null}
+
+      <ConfirmCloseDialog
+        open={!!closeConfirm}
+        fileName={closeConfirm?.name ?? ""}
+        onCancel={() => setCloseConfirm(null)}
+        onConfirm={() => {
+          const id = closeConfirm?.id;
+          setCloseConfirm(null);
+          if (id) performCloseDocs([id]);
+        }}
+      />
 
       <Dialog
         open={recentManageOpen}

@@ -88,6 +88,7 @@ import {
   type IconSettings,
 } from "./lib/iconSettings";
 import { isImageFilePath } from "./lib/profile";
+import { showAlert } from "./lib/appDialog";
 
 function infoWindowLabel(path: string) {
   let h = 0;
@@ -1230,6 +1231,8 @@ function App({
   pickTarget?: string | null;
 }) {
   const [activeSidebar, setActiveSidebar] = useState("drive-c");
+  const activeSidebarRef = useRef(activeSidebar);
+  activeSidebarRef.current = activeSidebar;
   const [appSettings, setAppSettings] = useState<AppSettings>(() =>
     loadAppSettings(),
   );
@@ -1243,6 +1246,8 @@ function App({
   const [drives, setDrives] = useState<DriveInfo[]>([]);
   const [driveFiles, setDriveFiles] = useState<Record<string, FileItem[]>>({});
   const [currentPath, setCurrentPath] = useState<string | null>(null);
+  const currentPathRef = useRef<string | null>(null);
+  currentPathRef.current = currentPath;
   const [pathEditing, setPathEditing] = useState(false);
   const [pathInput, setPathInput] = useState("");
   const pathInputRef = useRef<HTMLInputElement>(null);
@@ -1510,6 +1515,47 @@ function App({
     return items;
   }, [normPathKey]);
 
+  const loadTrashView = useCallback(async () => {
+    if (!isTauri()) {
+      setFolderItems([]);
+      setSelectedIds([]);
+      return;
+    }
+    const req = ++trashReqRef.current;
+    try {
+      // 1) 同步 peek 内存/磁盘缓存，立刻上屏（不扫盘）
+      try {
+        const peeked = await invoke<DirEntryInfo[] | null>("peek_recycle_bin");
+        if (req !== trashReqRef.current) return;
+        if (peeked && peeked.length) {
+          const items = peeked.map(toFileItem);
+          trashCacheRef.current = items;
+          if (activeSidebarRef.current === "trash") {
+            setFolderItems(items);
+          }
+        }
+      } catch {
+        /* peek 失败再走全量 */
+      }
+
+      // 2) 按指纹刷新；变了才后台重扫
+      const entries = await invoke<DirEntryInfo[]>("list_recycle_bin");
+      if (req !== trashReqRef.current) return;
+      const items = entries.map(toFileItem);
+      trashCacheRef.current = items;
+      if (activeSidebarRef.current !== "trash") return;
+      setFolderItems(items);
+      setSelectedIds([]);
+    } catch (err) {
+      if (req !== trashReqRef.current) return;
+      console.error("list_recycle_bin failed", err);
+      if (!trashCacheRef.current && activeSidebarRef.current === "trash") {
+        setFolderItems([]);
+        setSelectedIds([]);
+      }
+    }
+  }, []);
+
   // 列表虚拟窗口（固定行高）
   const LIST_ROW_H = 28;
   const listVirt = useVirtualRange(files.length, LIST_ROW_H, 10);
@@ -1707,31 +1753,6 @@ function App({
       console.error("loadFavoritesView failed", err);
       setFolderItems([]);
       setSelectedIds([]);
-    }
-  }, []);
-
-  const loadTrashView = useCallback(async () => {
-    if (!isTauri()) {
-      setFolderItems([]);
-      setSelectedIds([]);
-      return;
-    }
-    const req = ++trashReqRef.current;
-    try {
-      // 后端按指纹：未变直接返回缓存；变了才重扫
-      const entries = await invoke<DirEntryInfo[]>("list_recycle_bin");
-      if (req !== trashReqRef.current) return;
-      const items = entries.map(toFileItem);
-      trashCacheRef.current = items;
-      setFolderItems(items);
-      setSelectedIds([]);
-    } catch (err) {
-      if (req !== trashReqRef.current) return;
-      console.error("list_recycle_bin failed", err);
-      if (!trashCacheRef.current) {
-        setFolderItems([]);
-        setSelectedIds([]);
-      }
     }
   }, []);
 
@@ -2211,7 +2232,7 @@ function App({
       else reloadIcons();
     };
     window.addEventListener(ICON_SETTINGS_EVENT, onIconLocal);
-    // 设置窗口改完后切回主窗口时强制重读
+    // 设置窗口改完后切回主窗口时强制重读设置/图标（目录列表进入时加载一次即可）
     const onFocus = () => {
       apply(loadAppSettings());
       reloadIcons();
@@ -2331,7 +2352,7 @@ function App({
         }
       } catch (err) {
         console.error("drop onto fav folder failed", err);
-        window.alert(String(err));
+        void showAlert(String(err));
       }
     },
     [
@@ -2357,7 +2378,7 @@ function App({
         await refreshCurrent();
       } catch (err) {
         console.error("move drop failed", err);
-        window.alert(String(err));
+        void showAlert(String(err));
         await refreshCurrent();
       }
     },
@@ -2644,10 +2665,37 @@ function App({
     };
 
     void loadDrives();
+
+    // 启动时预热废纸篓/桌面磁盘缓存，切过去不卡
+    void (async () => {
+      try {
+        const peeked = await invoke<DirEntryInfo[] | null>("peek_recycle_bin");
+        if (!cancelled && peeked?.length) {
+          trashCacheRef.current = peeked.map(toFileItem);
+        }
+      } catch {
+        /* ignore */
+      }
+      try {
+        const desk = await invoke<string>("get_special_folder", {
+          name: "desktop",
+        });
+        if (cancelled || !desk) return;
+        specialPathRef.current.desktop = desk;
+        const entries = await invoke<DirEntryInfo[]>("list_dir", {
+          path: desk,
+        });
+        if (cancelled) return;
+        dirCacheRef.current.set(normPathKey(desk), entries.map(toFileItem));
+      } catch {
+        /* ignore */
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
-  }, [loadFolder, initialPath]);
+  }, [loadFolder, initialPath, normPathKey]);
 
   const applyTrashAndPopColumn = useCallback(
     (paths: string[]) => {
@@ -2739,14 +2787,14 @@ function App({
       const known = specialPathRef.current[id];
       if (known) {
         const cached = dirCacheRef.current.get(normPathKey(known));
-          if (cached) {
-            setFolderItems(cached);
-            setCurrentPath(known);
-            setNavStack([known]);
-            setNavIndex(0);
-            setSelectedIds([]);
-          }
+        if (cached) {
+          setFolderItems(cached);
+          setCurrentPath(known);
+          setNavStack([known]);
+          setNavIndex(0);
+          setSelectedIds([]);
         }
+      }
       void invoke<string>("get_special_folder", { name: id })
         .then(async (path) => {
           if (req !== specialReqRef.current) return;
@@ -2759,7 +2807,6 @@ function App({
             setNavIndex(0);
             setSelectedIds([]);
           }
-          // 后端按指纹判断：未变走缓存，变了才重读图标
           await navigateTo(path, "replace");
         })
         .catch((err) => console.error("get_special_folder failed", err));
@@ -2832,7 +2879,7 @@ function App({
       setCurrentPath(null);
       setNavStack([]);
       setNavIndex(-1);
-      // 与桌面/最近使用同理：先上屏缓存，再后台按指纹决定是否重读
+      // 先上屏内存缓存；peek/刷新在 loadTrashView 里完成
       const cached = trashCacheRef.current;
       if (cached) {
         setFolderItems(cached);
@@ -3153,7 +3200,7 @@ function App({
 
       if (id === "batch-create") {
         if (!dir) {
-          window.alert("当前不在可写目录中");
+          void showAlert("当前不在可写目录中");
           return;
         }
         setBatchCreateOpen(true);
@@ -3214,7 +3261,7 @@ function App({
           await refreshFavBar();
         } catch (err) {
           console.error("delete_favorite_folder failed", err);
-          window.alert(String(err));
+          void showAlert(String(err));
         }
         return;
       }
