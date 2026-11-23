@@ -5258,7 +5258,7 @@ dependencies = [
 
 [[package]]
 name = "your-computer-ui"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "rfd",
  "rusqlite",

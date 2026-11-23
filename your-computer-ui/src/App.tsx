@@ -3438,18 +3438,34 @@ function App({
       if (!prev) return prev;
       const next = !prev.showOpenWith;
       if (next && prev.itemPath && isTauri()) {
-        void invoke<OpenWithApp[]>("list_open_with", { path: prev.itemPath })
-          .then(setOpenWithApps)
+        const path = prev.itemPath;
+        const fallback: OpenWithApp[] = [
+          { id: "choose-another", name: "选择其他应用…", isDefault: false },
+          {
+            id: "ms-store",
+            name: "在 Microsoft Store 中查找应用",
+            isDefault: false,
+          },
+        ];
+        let settled = false;
+        const timer = window.setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          setOpenWithApps((cur) => (cur.length ? cur : fallback));
+        }, 1500);
+        void invoke<OpenWithApp[]>("list_open_with", { path })
+          .then((apps) => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            setOpenWithApps(apps?.length ? apps : fallback);
+          })
           .catch((err) => {
             console.error("list_open_with failed", err);
-            setOpenWithApps([
-              { id: "choose-another", name: "选择其他应用…", isDefault: false },
-              {
-                id: "ms-store",
-                name: "在 Microsoft Store 中查找应用",
-                isDefault: false,
-              },
-            ]);
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            setOpenWithApps(fallback);
           });
       }
       return {
